@@ -10,7 +10,9 @@
 # Secrets (Settings > Secrets and variables > Actions in the releases repo):
 #   SOURCE_REPO          <owner>/droptee-firmware (a secret, not written here,
 #                        so the owner's name stays out of public files and logs)
-#   FIRMWARE_REPO_TOKEN  fine-grained token, read-only "Contents" on that
+#   FIRMWARE_DEPLOY_KEY  private half of a read-only deploy key added to that
+#                        repository (Settings > Deploy keys); or instead
+#   FIRMWARE_REPO_TOKEN  a fine-grained token, read-only "Contents" on that
 #                        repository only
 #   TELEMETRY_CONFIG     the full text of UserApp/telemetry_config.json
 #
@@ -48,7 +50,8 @@ jobs:
         with:
           repository: ${{ secrets.SOURCE_REPO }}
           ref: ${{ inputs.ref }}
-          token: ${{ secrets.FIRMWARE_REPO_TOKEN }}
+          ssh-key: ${{ secrets.FIRMWARE_DEPLOY_KEY }}
+          token: ${{ secrets.FIRMWARE_REPO_TOKEN || github.token }}
           path: src
           persist-credentials: false
 
