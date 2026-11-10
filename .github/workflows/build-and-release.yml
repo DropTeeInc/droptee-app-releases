@@ -1,0 +1,107 @@
+# Builds the DropTee app installer and publishes it as a release of the
+# repository this file lives in (DropTeeInc/droptee-app-releases), so the
+# release shows "github-actions" as its publisher, not a person.
+#
+# This file belongs in that repository at
+#   .github/workflows/build-and-release.yml
+# (the copy in droptee-firmware/UserApp/release_workflow is the master; see
+# UserApp/RELEASING.md).
+#
+# Secrets (Settings > Secrets and variables > Actions in the releases repo):
+#   SOURCE_REPO          <owner>/droptee-firmware (a secret, not written here,
+#                        so the owner's name stays out of public files and logs)
+#   FIRMWARE_REPO_TOKEN  fine-grained token, read-only "Contents" on that
+#                        repository only
+#   TELEMETRY_CONFIG     the full text of UserApp/telemetry_config.json
+#
+# Run it: Actions > "Build and release DropTee app" > Run workflow.
+
+name: Build and release DropTee app
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "droptee-firmware branch, tag or commit to build"
+        required: true
+        default: develop
+      notes:
+        description: "Release notes. The first paragraph is what the app shows next to Install update."
+        required: true
+      prerelease:
+        description: "Pre-release (installed apps ignore it; use for a trial build)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write          # create the release in this repository
+
+concurrency: release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Get the app source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.FIRMWARE_REPO_TOKEN }}
+          path: src
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Usage-data settings
+        shell: pwsh
+        env:
+          TELEMETRY_CONFIG: ${{ secrets.TELEMETRY_CONFIG }}
+        run: |
+          if (-not $env:TELEMETRY_CONFIG) { throw "The TELEMETRY_CONFIG secret is missing." }
+          $null = $env:TELEMETRY_CONFIG | ConvertFrom-Json   # stops here if it isn't valid JSON
+          Set-Content -Path src/UserApp/telemetry_config.json -Value $env:TELEMETRY_CONFIG -Encoding utf8NoBOM
+
+      - name: App version
+        id: v
+        shell: pwsh
+        run: |
+          $m = Select-String -Path src/UserApp/droptee_app.py -Pattern '^APP_VERSION = "([0-9.]+)"'
+          if (-not $m) { throw "APP_VERSION not found in droptee_app.py" }
+          $v = $m.Matches[0].Groups[1].Value
+          gh release view "app-v$v" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "app-v$v is already released. Raise APP_VERSION first." }
+          $global:LASTEXITCODE = 0
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "Building DropTee $v"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Test and build
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: call src\UserApp\build_userapp.bat
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
+          PRE: ${{ inputs.prerelease }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          $dir = "src/UserApp/build_out"
+          $files = @("$dir/DropTee-Setup-$env:V.exe", "$dir/DropTee-Setup-$env:V.exe.sha256.txt")
+          foreach ($f in $files) { if (-not (Test-Path $f)) { throw "Missing $f" } }
+          $a = @("release", "create", "app-v$env:V") + $files + @(
+                 "--repo", $env:GITHUB_REPOSITORY, "--title", "DropTee $env:V", "--notes", $env:NOTES)
+          if ($env:PRE -eq "true") { $a += "--prerelease" }
+          gh @a
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
